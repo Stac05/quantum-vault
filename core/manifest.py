@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -72,6 +73,36 @@ class Manifest:
             (bytes, bytearray),
         ):
             raise ManifestError("Manifest encrypted_session_key must be bytes or None.")
+
+    def get_aad(self) -> bytes:
+        """Construct a deterministic binary representation of the manifest for AEAD binding.
+
+        Returns:
+            The AAD byte string.
+        """
+        aad = bytearray()
+        
+        def add_string(s: str) -> None:
+            b = s.encode("utf-8")
+            aad.extend(struct.pack(">I", len(b)))
+            aad.extend(b)
+            
+        def add_uint64(n: int | None) -> None:
+            aad.extend(struct.pack(">Q", n if n is not None else 0))
+            
+        def add_uint32(n: int) -> None:
+            aad.extend(struct.pack(">I", n))
+            
+        add_string(self.filename)
+        add_uint64(self.original_size)
+        add_string(self.encryption_mode)
+        add_uint64(self.chunk_size)
+        add_uint64(self.total_chunks)
+        add_string(self.cipher)
+        add_string(self.kem)
+        add_uint32(self.version)
+        
+        return bytes(aad)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the manifest to a JSON-serializable dictionary.

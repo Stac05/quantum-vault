@@ -7,6 +7,7 @@ iterates over them, and merges them back into a reconstructed file.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import struct
 from pathlib import Path
@@ -106,13 +107,30 @@ class FixedChunkProcessor:
 
         base_nonce = AESGCMCipher.generate_nonce()
         aes_cipher = cipher or AESGCMCipher.from_key(session_key)
+
+        file_size = source_file.stat().st_size
+        total_chunks = math.ceil(file_size / self.chunk_size) if file_size > 0 else 0
+
+        manifest = Manifest(
+            filename=source_file.name,
+            original_size=file_size,
+            encryption_mode="fixed",
+            chunk_size=self.chunk_size,
+            total_chunks=total_chunks or None,
+            cipher="AES-256-GCM",
+            kem="ML-KEM-768",
+            nonce=base_nonce,
+            encrypted_session_key=pack_encrypted_session_key(kem_ciphertext, b""),
+        )
+        
+        manifest_aad = manifest.get_aad()
         chunks_encrypted = 0
 
         ensure_parent_directory(destination_file)
         with destination_file.open("wb") as out_file:
             for index, chunk in enumerate(self.iter_chunks(source_file)):
                 chunk_nonce = self._derive_nonce(base_nonce, index)
-                ciphertext, tag = aes_cipher.encrypt(chunk, nonce=chunk_nonce)
+                ciphertext, tag = aes_cipher.encrypt(chunk, nonce=chunk_nonce, associated_data=manifest_aad)
                 chunk_record = struct.pack(">I", len(chunk_nonce))
                 chunk_record += chunk_nonce
                 chunk_record += struct.pack(">I", len(ciphertext))
@@ -120,18 +138,6 @@ class FixedChunkProcessor:
                 chunk_record += tag
                 out_file.write(chunk_record)
                 chunks_encrypted += 1
-
-        manifest = Manifest(
-            filename=source_file.name,
-            original_size=source_file.stat().st_size,
-            encryption_mode="fixed",
-            chunk_size=self.chunk_size,
-            total_chunks=chunks_encrypted or None,
-            cipher="AES-256-GCM",
-            kem="ML-KEM-768",
-            nonce=base_nonce,
-            encrypted_session_key=pack_encrypted_session_key(kem_ciphertext, b""),
-        )
 
         manifest.write_to_file(manifest_file)
         return manifest
@@ -170,37 +176,51 @@ class FixedChunkProcessor:
         aes_cipher = AESGCMCipher.from_key(session_key)
 
         chunk_index = 0
+        manifest_aad = manifest.get_aad()
         ensure_parent_directory(destination_file)
-        with source_file.open("rb") as f, destination_file.open("wb") as out_file:
-            while True:
-                length_bytes = f.read(4)
-                if not length_bytes:
-                    break
-                if len(length_bytes) < 4:
-                    raise ValueError("Encrypted chunk payload is truncated.")
-                nonce_length = int.from_bytes(length_bytes, "big")
+        
+        tmp_destination = destination_file.with_name(destination_file.name + ".tmp")
+        try:
+            with source_file.open("rb") as f, tmp_destination.open("wb") as out_file:
+                while True:
+                    length_bytes = f.read(4)
+                    if not length_bytes:
+                        break
+                    if len(length_bytes) < 4:
+                        raise ValueError("Encrypted chunk payload is truncated.")
+                    nonce_length = int.from_bytes(length_bytes, "big")
 
-                chunk_nonce = f.read(nonce_length)
-                if len(chunk_nonce) < nonce_length:
-                    raise ValueError("Encrypted chunk payload is truncated.")
+                    chunk_nonce = f.read(nonce_length)
+                    if len(chunk_nonce) < nonce_length:
+                        raise ValueError("Encrypted chunk payload is truncated.")
 
-                len_bytes_ct = f.read(4)
-                if len(len_bytes_ct) < 4:
-                    raise ValueError("Encrypted chunk payload is truncated.")
-                ciphertext_length = int.from_bytes(len_bytes_ct, "big")
+                    len_bytes_ct = f.read(4)
+                    if len(len_bytes_ct) < 4:
+                        raise ValueError("Encrypted chunk payload is truncated.")
+                    ciphertext_length = int.from_bytes(len_bytes_ct, "big")
 
-                ciphertext = f.read(ciphertext_length)
-                if len(ciphertext) < ciphertext_length:
-                    raise ValueError("Encrypted chunk payload is truncated.")
+                    ciphertext = f.read(ciphertext_length)
+                    if len(ciphertext) < ciphertext_length:
+                        raise ValueError("Encrypted chunk payload is truncated.")
 
-                tag = f.read(AESGCMCipher.TAG_SIZE)
-                if len(tag) < AESGCMCipher.TAG_SIZE:
-                    raise ValueError("Encrypted chunk payload is truncated.")
+                    tag = f.read(AESGCMCipher.TAG_SIZE)
+                    if len(tag) < AESGCMCipher.TAG_SIZE:
+                        raise ValueError("Encrypted chunk payload is truncated.")
 
-                derived_nonce = self._derive_nonce(manifest.nonce or chunk_nonce, chunk_index)
-                decrypted = aes_cipher.decrypt(ciphertext, tag, derived_nonce)
-                out_file.write(decrypted)
-                chunk_index += 1
+                    derived_nonce = self._derive_nonce(manifest.nonce or chunk_nonce, chunk_index)
+                    decrypted = aes_cipher.decrypt(ciphertext, tag, derived_nonce, associated_data=manifest_aad)
+                    out_file.write(decrypted)
+                    chunk_index += 1
+                    
+            if chunk_index != (manifest.total_chunks or 0):
+                raise ValueError("Encrypted chunk payload is truncated or incomplete.")
+                
+            tmp_destination.replace(destination_file)
+        except Exception:
+            if tmp_destination.exists():
+                tmp_destination.unlink()
+            raise
+            
         return manifest
 
     @staticmethod

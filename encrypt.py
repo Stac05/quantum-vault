@@ -75,21 +75,26 @@ def handle_encrypt(args):
 def main():
     setup_logging()
     
-    if len(sys.argv) > 1 and sys.argv[1] == "keygen":
-        parser = argparse.ArgumentParser(description="QuantumVault Key Generation CLI")
-        parser.add_argument("command", help="Command to run")
-        parser.add_argument("--public", required=True, help="Path to save the public key")
-        parser.add_argument("--private", required=True, help="Path to save the private key")
-        args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="QuantumVault Encryption CLI")
+    parser.add_argument("--version", action="version", version=VERSION)
+    
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    
+    keygen_parser = subparsers.add_parser("keygen", help="Generate an ML-KEM-768 key pair")
+    keygen_parser.add_argument("--public", required=True, help="Path to save the public key")
+    keygen_parser.add_argument("--private", required=True, help="Path to save the private key")
+    
+    encrypt_parser = subparsers.add_parser("encrypt", help="Encrypt a file")
+    encrypt_parser.add_argument("--mode", required=True, choices=["whole", "fixed", "adaptive"], help="Encryption mode")
+    encrypt_parser.add_argument("--input", required=True, help="Input file path")
+    encrypt_parser.add_argument("--output", required=True, help="Output file path")
+    encrypt_parser.add_argument("--public", required=True, help="Path to the public key")
+    
+    args = parser.parse_args()
+    
+    if args.command == "keygen":
         handle_keygen(args)
-    else:
-        parser = argparse.ArgumentParser(description="QuantumVault Encryption CLI")
-        parser.add_argument("--version", action="version", version=VERSION)
-        parser.add_argument("--mode", required=True, choices=["whole", "fixed", "adaptive"], help="Encryption mode")
-        parser.add_argument("--input", required=True, help="Input file path")
-        parser.add_argument("--output", required=True, help="Output file path")
-        parser.add_argument("--public", required=True, help="Path to the public key")
-        args = parser.parse_args()
+    elif args.command == "encrypt":
         handle_encrypt(args)
 
 if __name__ == "__main__":

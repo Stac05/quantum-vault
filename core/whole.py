@@ -91,7 +91,6 @@ class WholeFileProcessor:
 
         nonce = AESGCMCipher.generate_nonce()
         aes_cipher = cipher or AESGCMCipher.from_key(session_key)
-        ciphertext, tag = aes_cipher.encrypt(plaintext, nonce=nonce)
 
         manifest = Manifest(
             filename=source_file.name,
@@ -104,6 +103,8 @@ class WholeFileProcessor:
             nonce=nonce,
             encrypted_session_key=pack_encrypted_session_key(kem_ciphertext, b""),
         )
+
+        ciphertext, tag = aes_cipher.encrypt(plaintext, nonce=nonce, associated_data=manifest.get_aad())
 
         ensure_parent_directory(destination_file)
         with destination_file.open("wb") as out_file:
@@ -153,7 +154,15 @@ class WholeFileProcessor:
         shared_secret = kem_backend.decapsulate(kem_ciphertext, bytes(private_key))
         session_key = derive_key(shared_secret)
         aes_cipher = AESGCMCipher.from_key(session_key)
-        plaintext = aes_cipher.decrypt(ciphertext, tag, nonce)
+        plaintext = aes_cipher.decrypt(ciphertext, tag, nonce, associated_data=manifest.get_aad())
 
-        self.write_file(destination_file, plaintext)
+        tmp_destination = destination_file.with_name(destination_file.name + ".tmp")
+        try:
+            self.write_file(tmp_destination, plaintext)
+            tmp_destination.replace(destination_file)
+        except Exception:
+            if tmp_destination.exists():
+                tmp_destination.unlink()
+            raise
+            
         return manifest
