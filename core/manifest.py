@@ -6,10 +6,14 @@ validation, serialization, and deserialization helpers.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
+
+from .utils import ensure_parent_directory
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +34,8 @@ class Manifest:
     cipher: str = "AES-256-GCM"
     kem: str = "ML-KEM-768"
     version: int = 1
+    nonce: bytes | None = None
+    encrypted_session_key: bytes | None = None
 
     def __post_init__(self) -> None:
         """Validate the manifest data after initialization."""
@@ -59,6 +65,13 @@ class Manifest:
             raise ManifestError("Manifest version must be a positive integer.")
         if self.version != 1:
             raise ManifestError("Unsupported manifest version.")
+        if self.nonce is not None and not isinstance(self.nonce, (bytes, bytearray)):
+            raise ManifestError("Manifest nonce must be bytes or None.")
+        if self.encrypted_session_key is not None and not isinstance(
+            self.encrypted_session_key,
+            (bytes, bytearray),
+        ):
+            raise ManifestError("Manifest encrypted_session_key must be bytes or None.")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the manifest to a JSON-serializable dictionary.
@@ -66,7 +79,18 @@ class Manifest:
         Returns:
             A dictionary representation of the manifest.
         """
-        return asdict(self)
+        return {
+            "filename": self.filename,
+            "original_size": self.original_size,
+            "encryption_mode": self.encryption_mode,
+            "chunk_size": self.chunk_size,
+            "total_chunks": self.total_chunks,
+            "cipher": self.cipher,
+            "kem": self.kem,
+            "version": self.version,
+            "nonce": self._encode_bytes(self.nonce),
+            "encrypted_session_key": self._encode_bytes(self.encrypted_session_key),
+        }
 
     def to_json(self, *, indent: int = 2) -> str:
         """Serialize the manifest as JSON.
@@ -78,6 +102,16 @@ class Manifest:
             The manifest serialized as JSON.
         """
         return json.dumps(self.to_dict(), indent=indent)
+
+    def write_to_file(self, destination_path: str | Path) -> None:
+        """Write the manifest to a JSON file.
+
+        Args:
+            destination_path: The output path for the manifest.
+        """
+        path = Path(destination_path)
+        ensure_parent_directory(path)
+        path.write_text(self.to_json(), encoding="utf-8")
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Manifest":
@@ -106,6 +140,8 @@ class Manifest:
                 cipher=str(data.get("cipher", "AES-256-GCM")),
                 kem=str(data.get("kem", "ML-KEM-768")),
                 version=int(data.get("version", 1)),
+                nonce=cls._decode_bytes(data.get("nonce")),
+                encrypted_session_key=cls._decode_bytes(data.get("encrypted_session_key")),
             )
         except KeyError as exc:
             raise ManifestError(f"Manifest is missing required field: {exc.args[0]}") from exc
@@ -130,3 +166,46 @@ class Manifest:
         except json.JSONDecodeError as exc:
             raise ManifestError("Manifest JSON is malformed.") from exc
         return cls.from_dict(payload)
+
+    @classmethod
+    def from_file(cls, source_path: str | Path) -> "Manifest":
+        """Load a manifest from a JSON file.
+
+        Args:
+            source_path: The manifest file path.
+
+        Returns:
+            A manifest instance populated from disk.
+        """
+        path = Path(source_path)
+        return cls.from_json(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _encode_bytes(value: bytes | bytearray | None) -> str | None:
+        """Encode bytes-like values for JSON serialization.
+
+        Args:
+            value: The bytes-like value to encode.
+
+        Returns:
+            The base64-encoded string or ``None``.
+        """
+        if value is None:
+            return None
+        return base64.b64encode(bytes(value)).decode("ascii")
+
+    @staticmethod
+    def _decode_bytes(value: Any) -> bytes | None:
+        """Decode base64-encoded bytes for manifest deserialization.
+
+        Args:
+            value: The value to decode.
+
+        Returns:
+            The decoded bytes or ``None``.
+        """
+        if value is None:
+            return None
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value)
+        return base64.b64decode(str(value))
