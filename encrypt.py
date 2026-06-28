@@ -2,3 +2,4 @@
 
 TODO: Implement CLI encryption workflow in a future phase.
 """
+

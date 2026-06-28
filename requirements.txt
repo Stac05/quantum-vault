@@ -1,1 +1,3 @@
 # TODO: Add project dependencies in a future phase.
+cryptography==45.0.6
+liboqs-python==0.15.0
