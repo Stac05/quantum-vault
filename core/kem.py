@@ -99,8 +99,8 @@ class OQSBackend:
         Returns:
             The recovered shared secret bytes.
         """
-        del private_key
-        return self._kem.decap_secret(ciphertext)
+        with self._oqs.KeyEncapsulation("ML-KEM-768", secret_key=private_key) as kem:
+            return kem.decap_secret(ciphertext)
 
 
 class MLKEM768:

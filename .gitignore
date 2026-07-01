@@ -219,3 +219,7 @@ __marimo__/
 
 # Secret
 docs/
+keys/
+sample/
+benchmark_data/
+results/
